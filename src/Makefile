@@ -34,13 +34,13 @@
 CXX=g++
 CC=gcc
 
-ARDB_VERSION=0.9.4
+ARDB_VERSION=0.9.5
 
 uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
 
 LIB_PATH=$(PWD)/../deps
 
-JEMALLOC_VER=4.4.0
+JEMALLOC_VER=5.0.1
 JEMALLOC_PATH=${LIB_PATH}/jemalloc-${JEMALLOC_VER}
 JEMALLOC_FILE=${JEMALLOC_PATH}.tar.bz2
 JEMALLOC_REMOTE_FILE=https://github.com/jemalloc/jemalloc/releases/download/${JEMALLOC_VER}/jemalloc-${JEMALLOC_VER}.tar.bz2
@@ -64,7 +64,7 @@ LEVELDB_FILE=${LEVELDB_PATH}.tar.gz
 LEVELDB_REMOTE_FILE=https://github.com/google/leveldb/archive/v${LEVELDB_VER}.tar.gz
 LEVELDB_LIBA=${LEVELDB_PATH}/out-static/libleveldb.a
 
-LMDB_VER=0.9.19
+LMDB_VER=0.9.21
 LMDB_PATH=${LIB_PATH}/lmdb-LMDB_${LMDB_VER}/libraries/liblmdb
 LMDB_FILE=${LIB_PATH}/lmdb-${LMDB_VER}.tar.gz
 LMDB_REMOTE_FILE=https://github.com/LMDB/lmdb/archive/LMDB_${LMDB_VER}.tar.gz
@@ -139,14 +139,14 @@ endif
 
 storage_engine?=rocksdb
 
-LIBS= ${LUA_LIBA} ${MALLOC_LIBA} ${SNAPPY_LIBA} -lpthread 
+LIBS= ${LUA_LIBA} ${MALLOC_LIBA} ${SNAPPY_LIBA} -lpthread -ldl
 
 # Default allocator
 ifeq ($(uname_S),Linux)
 	MALLOC=jemalloc
 	CXXFLAGS+=-DCORO_ASM
 	CCFLAGS+=-DCORO_ASM
-	LIBS+=-lrt
+	LIBS+=-lrt 
 else
 	MALLOC=libc
 	CXXFLAGS+=-DCORO_UCONTEXT -D_XOPEN_SOURCE

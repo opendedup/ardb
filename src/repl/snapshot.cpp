@@ -264,14 +264,14 @@ namespace ardb
             if (Read(buf + 1, 1) == 0) return REDIS_RDB_LENERR;
             return ((buf[0] & 0x3F) << 8) | buf[1];
         }
-        else if (type == REDIS_RDB_32BITLEN)
+        else if (buf[0] == REDIS_RDB_32BITLEN)
         {
             /* Read a 32 bit len. */
             uint32_t len;
             if (!Read(&len, 4)) return -1;
             return ntohl(len);
         }
-        else if (type == REDIS_RDB_64BITLEN)
+        else if (buf[0] == REDIS_RDB_64BITLEN)
         {
             /* Read a 64 bit len. */
             uint64_t len;
@@ -569,7 +569,7 @@ namespace ardb
         return nwritten;
     }
 
-    int ObjectIO::WriteLen(uint32 len)
+    int ObjectIO::WriteLen(uint64 len)
     {
         unsigned char buf[2];
         size_t nwritten;
@@ -589,14 +589,23 @@ namespace ardb
             if (Write(buf, 2) == -1) return -1;
             nwritten = 2;
         }
-        else
+        else if (len <= UINT32_MAX)
         {
             /* Save a 32 bit len */
-            buf[0] = (REDIS_RDB_32BITLEN << 6);
+            buf[0] = (REDIS_RDB_32BITLEN);
             if (Write(buf, 1) == -1) return -1;
             len = htonl(len);
             if (Write(&len, 4) == -1) return -1;
             nwritten = 1 + 4;
+        }
+        else
+        {
+            /* Save a 64 bit len */
+            buf[0] = REDIS_RDB_64BITLEN;
+            if (Write(buf, 1) == -1) return -1;
+            len = htonu64(len);
+            if (Write(&len, 8) == -1) return -1;
+            nwritten = 1 + 8;
         }
         return nwritten;
     }
@@ -623,7 +632,7 @@ namespace ardb
             case KEY_ZSET_SCORE:
             case KEY_ZSET_SORT:
             {
-                return WriteType(REDIS_RDB_TYPE_ZSET_2);
+                return WriteType(REDIS_RDB_TYPE_ZSET);
             }
             case KEY_HASH:
             case KEY_HASH_FIELD:
@@ -1584,7 +1593,7 @@ namespace ardb
             NULL), m_routine_cbdata(
             NULL), m_processed_bytes(0), m_file_size(0), m_state(SNAPSHOT_INVALID), m_routinetime(0), m_read_buf(
             NULL), m_expected_data_size(0), m_writed_data_size(0), m_cached_repl_offset(0), m_cached_repl_cksm(0), m_save_time(
-                    0), m_type((SnapshotType) 0), m_snapshot_iter(
+                    0), m_type((SnapshotType) 0), m_engine_snapshot(
             NULL)
     {
 
@@ -1666,8 +1675,9 @@ namespace ardb
         m_cksm = 0;
         m_processed_bytes = 0;
         m_writed_data_size = 0;
-        delete ((Iterator*) m_snapshot_iter);
-        m_snapshot_iter = NULL;
+        g_engine->ReleaseSnapshot(m_engine_snapshot);
+        //delete ((Iterator*) m_snapshot_iter);
+        m_engine_snapshot = NULL;
     }
 
     int Snapshot::SetFilePath(const std::string& path)
@@ -1926,9 +1936,10 @@ namespace ardb
             /*
              * Create stable view for later all db iteration, 'm_snapshot_iter' would be close in 'Close' method
              */
-            Context tmpctx;
-            KeyObject start;
-            m_snapshot_iter = g_engine->Find(tmpctx, start);
+            //Context tmpctx;
+            //KeyObject start;
+            //m_snapshot_iter = g_engine->Find(tmpctx, start);
+            m_engine_snapshot = g_engine->CreateSnapshot();
             g_db->OpenWriteLatchAfterSnapshotPrepare();
         }
         return 0;
@@ -2150,7 +2161,11 @@ namespace ardb
         loadctx.flags.create_if_notexist = 1;
         loadctx.flags.bulk_loading = 1;
         //BatchWriteGuard guard(tmpctx);
-        if (!Read(buf, 9, true)) goto eoferr;
+        if (!Read(buf, 9, true))
+        {
+            ERROR_LOG("Failed to read head.");
+            goto eoferr;
+        }
         buf[9] = '\0';
         if (memcmp(buf, "REDIS", 5) != 0)
         {
@@ -2256,6 +2271,7 @@ namespace ardb
             uint64_t cksum, expected = m_cksm;
             if (!Read(&cksum, 8, true))
             {
+                ERROR_LOG("Failed to load cksum.");
                 goto eoferr;
             }memrev64ifbe(&cksum);
             if (cksum == 0)
@@ -2283,6 +2299,13 @@ namespace ardb
         WARN_LOG("Short read or OOM loading DB. Unrecoverable error, aborting now.");
         return -1;
     }
+    void* Snapshot::GetIteratorByNamespace(Context& ctx, const Data& ns)
+    {
+        KeyObject empty;
+        empty.SetNameSpace(ns);
+        ctx.engine_snapshot = m_engine_snapshot;
+        return g_db->GetEngine()->Find(ctx, empty);
+    }
 
     int Snapshot::RedisSave()
     {
@@ -2307,9 +2330,10 @@ namespace ardb
             int64 dbid = 0;
             string_toint64(nss[i].AsString(), dbid);
             DUMP_CHECK_WRITE(WriteLen(dbid));
-            KeyObject empty;
-            empty.SetNameSpace(nss[i]);
-            Iterator* iter = g_db->GetEngine()->Find(dumpctx, empty);
+            //KeyObject empty;
+            //empty.SetNameSpace(nss[i]);
+            //Iterator* iter = g_db->GetEngine()->Find(dumpctx, empty);
+            Iterator* iter = (Iterator*)GetIteratorByNamespace(dumpctx, nss[i]);
             Data current_key;
             KeyType current_keytype;
             int64 objectlen = 0;
@@ -2496,9 +2520,10 @@ namespace ardb
             RETURN_NEGATIVE_EXPR(WriteType(ARDB_RDB_OPCODE_SELECTDB));
             RETURN_NEGATIVE_EXPR(WriteStringObject(nss[i]));
 
-            KeyObject empty;
-            empty.SetNameSpace(nss[i]);
-            Iterator* iter = g_db->GetEngine()->Find(dumpctx, empty);
+            //KeyObject empty;
+            //empty.SetNameSpace(nss[i]);
+            //Iterator* iter = g_db->GetEngine()->Find(dumpctx, empty);
+            Iterator* iter = (Iterator*)GetIteratorByNamespace(dumpctx, nss[i]);
             while (iter->Valid())
             {
                 int64 ttl = 0;
